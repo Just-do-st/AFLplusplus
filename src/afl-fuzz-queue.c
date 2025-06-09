@@ -926,6 +926,7 @@ void cull_queue(afl_state_t *afl) {
 
   afl->queued_favored = 0;
   afl->pending_favored = 0;
+  u64 min_factor = UINT64_MAX;
 
   for (i = 0; i < afl->queued_items; i++) {
 
@@ -965,8 +966,12 @@ void cull_queue(afl_state_t *afl) {
         if (!afl->top_rated[i]->was_fuzzed) {
 
           ++afl->pending_favored;
-          if (unlikely(afl->smallest_favored < 0)) {
 
+          // 改进选择，优先选择更优质，差异更大的种子
+          u64 fav_factor = afl->top_rated[i]->exec_us * afl->top_rated[i]->len;
+
+          if (fav_factor < min_factor) {
+            min_factor = fav_factor;
             afl->smallest_favored = (s64)afl->top_rated[i]->id;
 
           }
