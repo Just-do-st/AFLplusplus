@@ -248,6 +248,8 @@ struct queue_entry {
 #endif
 
   double perf_score,                    /* performance score                */
+      diff,                             /* performance score                */
+      favfactor,                          /* performance score                */
       weight;
 
   struct queue_entry *mother;            /* queue entry this based on        */

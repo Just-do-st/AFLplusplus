@@ -31,6 +31,7 @@
 #include "common.h"
 #include <limits.h>
 #include <stdlib.h>
+#include <float.h>
 #ifndef USEMMAP
   #include <sys/mman.h>
   #include <sys/stat.h>
@@ -543,6 +544,26 @@ static void fasan_check_afl_preload(char *afl_preload) {
 
 }
 
+// trace1 have but trace2 not
+double get_trace_mini_distance(afl_state_t *afl, u8 *trace1, u8 *trace2) {
+  u32 a1_b0 = 0;
+
+  // u8 到 u64 >>3
+  u32 len = (afl->fsrv.map_size >> 6);  // u64 长度
+
+  u64 *a = (u64 *)trace1;
+  u64 *b = (u64 *)trace2;
+
+  for (u32 i = 0; i < len; i++) {
+    if (b[i] || a[i]) {
+      u64 a1b0_bits = a[i] & ~b[i];
+      if (a1b0_bits) { a1_b0 += __builtin_popcountll(a1b0_bits); }
+    }
+  }
+
+  return (double)a1_b0;
+}
+
 /* Main entry point */
 
 int main(int argc, char **argv_orig, char **envp) {
@@ -558,6 +579,7 @@ int main(int argc, char **argv_orig, char **envp) {
   char  *san_abstraction;
   char  *frida_afl_preload = NULL;
   char **use_argv;
+  u8    *visited_trace_mini = NULL;
 
   struct timeval  tv;
   struct timezone tz;
@@ -2829,6 +2851,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
     memset(afl->virgin_tmout, 255, map_size);
     memset(afl->virgin_crash, 255, map_size);
+    visited_trace_mini = ck_alloc((afl->fsrv.map_size + 7) >> 3);
 
     if (likely(!afl->afl_env.afl_no_startup_calibration)) {
 
@@ -3169,6 +3192,70 @@ int main(int argc, char **argv_orig, char **envp) {
         if (likely(afl->pending_favored && afl->smallest_favored >= 0)) {
 
           afl->current_entry = afl->smallest_favored;
+
+          if (likely(afl->pending_favored > 1)) {
+            double max_dist_to_ES = -DBL_MAX;
+            double min_dist_to_ES = DBL_MAX;
+            double max_factor = -DBL_MAX;
+            double min_factor = DBL_MAX;
+
+            for (u32 i = 0; i < afl->queued_items; i++) {
+              if (!afl->queue_buf[i]->favored ||
+                  afl->queue_buf[i]->was_fuzzed || afl->queue_buf[i]->disabled)
+                continue;
+
+              struct queue_entry *q = afl->queue_buf[i];
+
+              if (q->trace_mini) {
+                q->diff =
+                    get_trace_mini_distance(afl, q->trace_mini, visited_trace_mini);
+              } else {
+                q->diff = 0.0;
+              }
+              max_dist_to_ES = MAX(max_dist_to_ES, q->diff);
+              min_dist_to_ES = MIN(min_dist_to_ES, q->diff);
+
+              q->favfactor = (double)q->exec_us * q->len;
+              max_factor = MAX(max_factor, q->favfactor);
+              min_factor = MIN(min_factor, q->favfactor);
+            }
+
+            double max_score = -DBL_MAX;
+
+            for (u32 i = 0; i < afl->queued_items; i++) {
+              if (!afl->queue_buf[i]->favored ||
+                  afl->queue_buf[i]->was_fuzzed || afl->queue_buf[i]->disabled)
+                continue;
+
+              struct queue_entry *q = afl->queue_buf[i];
+
+              double n_factor;
+              if (max_factor != min_factor && min_factor != -DBL_MAX) {
+                n_factor =
+                    (q->favfactor - min_factor) / (max_factor - min_factor);
+
+              } else {
+                n_factor = 0;
+              }
+
+              double n_dist_to_ES;
+              if (max_dist_to_ES != min_dist_to_ES &&
+                  min_dist_to_ES != -DBL_MAX) {
+                n_dist_to_ES = (q->diff - min_dist_to_ES) /
+                               (max_dist_to_ES - min_dist_to_ES);
+
+              } else {
+                n_dist_to_ES = 0;
+              }
+
+              double score = 0.7 * n_dist_to_ES + 0.3 * (1.0 - n_factor);
+
+              if (score > max_score) {
+                max_score = score;
+                afl->current_entry = i;
+              }
+            }
+          }
 
           /*
 
