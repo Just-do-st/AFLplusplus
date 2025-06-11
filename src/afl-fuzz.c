@@ -546,6 +546,7 @@ static void fasan_check_afl_preload(char *afl_preload) {
 
 // trace1 have but trace2 not
 double get_trace_mini_distance(afl_state_t *afl, u8 *trace1, u8 *trace2) {
+
   u32 a1_b0 = 0;
 
   // u8 到 u64 >>3
@@ -555,13 +556,27 @@ double get_trace_mini_distance(afl_state_t *afl, u8 *trace1, u8 *trace2) {
   u64 *b = (u64 *)trace2;
 
   for (u32 i = 0; i < len; i++) {
+
     if (b[i] || a[i]) {
+
       u64 a1b0_bits = a[i] & ~b[i];
-      if (a1b0_bits) { a1_b0 += __builtin_popcountll(a1b0_bits); }
+
+      if (a1b0_bits) {
+
+  #ifdef _MSC_VER
+        a1_b0 += __popcnt64(a1b0_bits);
+  #else
+        a1_b0 += __builtin_popcountll(a1b0_bits);
+  #endif
+
+      }
+
     }
+
   }
 
   return (double)a1_b0;
+
 }
 
 /* Main entry point */
@@ -3194,12 +3209,14 @@ int main(int argc, char **argv_orig, char **envp) {
           afl->current_entry = afl->smallest_favored;
 
           if (likely(afl->pending_favored > 1)) {
-            double max_dist_to_ES = -DBL_MAX;
-            double min_dist_to_ES = DBL_MAX;
-            double max_factor = -DBL_MAX;
-            double min_factor = DBL_MAX;
+
+            double max_divergence = -DBL_MAX;
+            double min_divergence = DBL_MAX;
+            double max_fav_factor = -DBL_MAX;
+            double min_fav_factor = DBL_MAX;
 
             for (u32 i = 0; i < afl->queued_items; i++) {
+
               if (!afl->queue_buf[i]->favored ||
                   afl->queue_buf[i]->was_fuzzed || afl->queue_buf[i]->disabled)
                 continue;
@@ -3207,22 +3224,29 @@ int main(int argc, char **argv_orig, char **envp) {
               struct queue_entry *q = afl->queue_buf[i];
 
               if (q->trace_mini) {
-                q->diff =
-                    get_trace_mini_distance(afl, q->trace_mini, visited_trace_mini);
-              } else {
-                q->diff = 0.0;
-              }
-              max_dist_to_ES = MAX(max_dist_to_ES, q->diff);
-              min_dist_to_ES = MIN(min_dist_to_ES, q->diff);
 
-              q->favfactor = (double)q->exec_us * q->len;
-              max_factor = MAX(max_factor, q->favfactor);
-              min_factor = MIN(min_factor, q->favfactor);
+                q->divergence = get_trace_mini_distance(afl, q->trace_mini,
+                                                        visited_trace_mini);
+
+              } else {
+
+                q->divergence = 0.0;
+
+              }
+
+              max_divergence = MAX(max_divergence, q->divergence);
+              min_divergence = MIN(min_divergence, q->divergence);
+
+              q->fav_factor = (double)q->exec_us * q->len;
+              max_fav_factor = MAX(max_fav_factor, q->fav_factor);
+              min_fav_factor = MIN(min_fav_factor, q->fav_factor);
+
             }
 
             double max_score = -DBL_MAX;
 
             for (u32 i = 0; i < afl->queued_items; i++) {
+
               if (!afl->queue_buf[i]->favored ||
                   afl->queue_buf[i]->was_fuzzed || afl->queue_buf[i]->disabled)
                 continue;
@@ -3230,31 +3254,42 @@ int main(int argc, char **argv_orig, char **envp) {
               struct queue_entry *q = afl->queue_buf[i];
 
               double n_factor;
-              if (max_factor != min_factor && min_factor != -DBL_MAX) {
-                n_factor =
-                    (q->favfactor - min_factor) / (max_factor - min_factor);
+              if (max_fav_factor != min_fav_factor &&
+                  min_fav_factor != -DBL_MAX) {
+
+                n_factor = (q->fav_factor - min_fav_factor) /
+                           (max_fav_factor - min_fav_factor);
 
               } else {
+
                 n_factor = 0;
+
               }
 
               double n_dist_to_ES;
-              if (max_dist_to_ES != min_dist_to_ES &&
-                  min_dist_to_ES != -DBL_MAX) {
-                n_dist_to_ES = (q->diff - min_dist_to_ES) /
-                               (max_dist_to_ES - min_dist_to_ES);
+              if (max_divergence != min_divergence &&
+                  min_divergence != -DBL_MAX) {
+
+                n_dist_to_ES = (q->divergence - min_divergence) /
+                               (max_divergence - min_divergence);
 
               } else {
+
                 n_dist_to_ES = 0;
+
               }
 
               double score = 0.7 * n_dist_to_ES + 0.3 * (1.0 - n_factor);
 
               if (score > max_score) {
+
                 max_score = score;
                 afl->current_entry = i;
+
               }
+
             }
+
           }
 
           /*
@@ -3277,6 +3312,21 @@ int main(int argc, char **argv_orig, char **envp) {
           */
 
           afl->queue_cur = afl->queue_buf[afl->current_entry];
+
+          if (afl->queue_cur->trace_mini) {
+
+            u32 len = (afl->fsrv.map_size >> 6);  // u64 长度
+
+            u64 *a = (u64 *)afl->queue_cur->trace_mini;
+            u64 *b = (u64 *)visited_trace_mini;
+
+            for (u32 i = 0; i < len; i++) {
+
+              b[i] |= a[i];
+
+            }
+
+          }
 
         } else {
 

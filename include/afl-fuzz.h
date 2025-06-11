@@ -248,8 +248,8 @@ struct queue_entry {
 #endif
 
   double perf_score,                    /* performance score                */
-      diff,                             /* performance score                */
-      favfactor,                          /* performance score                */
+      divergence,                       /* Diversity metric for fav seeds   */
+      fav_factor,                       /* favored factor                   */
       weight;
 
   struct queue_entry *mother;            /* queue entry this based on        */
